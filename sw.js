@@ -1,6 +1,6 @@
 /* Offline-Unterstützung: App-Dateien werden zwischengespeichert.
    Online wird immer die neueste Version geladen, offline die gespeicherte. */
-const CACHE = 'kontrollverwiegung-v8';
+const CACHE = 'kontrollverwiegung-v9';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', event => {
