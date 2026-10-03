@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnose Datensicherung</title>
+<style>
+body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;padding:20px;background:#E7ECEE;color:#16232B}
+h1{font-size:20px;margin:0 0 12px}
+label{display:block;font-size:13px;color:#51616A;margin:12px 0 4px}
+input{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #C9D3D8;border-radius:8px;background:#fff}
+button{font:inherit;font-weight:600;padding:12px 18px;border:0;border-radius:10px;background:#0B67A8;color:#fff;margin:16px 8px 0 0}
+button:disabled{opacity:.5}
+pre{background:#fff;border:1px solid #C9D3D8;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font-size:14px;min-height:80px}
+.ok{color:#17784A}.bad{color:#B42F1C}
+</style>
+</head>
+<body>
+<h1>Diagnose der Google-Sheets-Verbindung</h1>
+<p>Diese Seite misst, wie lange Anfragen an Google Apps Script von diesem Gerät aus brauchen. Es werden keine Daten gespeichert.</p>
+<label>Web-App-Adresse (…/exec)</label>
+<input id="url" type="url" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec">
+<button id="run">Test starten (7 Anfragen)</button>
+<button id="copy" hidden>Ergebnis kopieren</button>
+<pre id="log">Noch kein Test gelaufen.</pre>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+try { const u = new URLSearchParams(location.search).get('url'); if (u) $('#url').value = u; } catch (e) {}
+const lines = [];
+function log(s, cls) { lines.push(s); const el = $('#log'); const d = document.createElement('div'); d.textContent = s; if (cls) d.className = cls; el.appendChild(d); window.scrollTo(0, document.body.scrollHeight); }
+function withTimeout(label, limitMs, work) {
+  const t0 = performance.now();
+  return new Promise(resolve => {
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve({ ms: Math.round(performance.now() - t0), err: 'Zeitüberschreitung (' + limitMs / 1000 + ' s)' }); } }, limitMs);
+    work().then(r => { if (!done) { done = true; clearTimeout(timer); resolve(Object.assign({ ms: Math.round(performance.now() - t0) }, r)); } },
+      e => { if (!done) { done = true; clearTimeout(timer); resolve({ ms: Math.round(performance.now() - t0), err: e.name + ': ' + e.message }); } });
+  });
+}
+function describe(txt, status) {
+  if (status === 0 && !txt) return 'HTTP 0 (undurchsichtig, Inhalt nicht lesbar)';
+  let kind = 'HTML/anderes'; try { const j = JSON.parse(txt); kind = 'JSON ' + (j.ok ? 'ok: ' + (j.message || '') : 'Fehler: ' + j.error); } catch (e) {}
+  return 'HTTP ' + status + ', ' + kind;
+}
+async function viaFetch(url, opts) { const res = await fetch(url, opts); let txt = ''; try { txt = await res.text(); } catch (e) {} return { info: describe(txt, res.status) + (res.redirected ? ', Weiterleitung gefolgt' : '') + (res.type ? ', Typ ' + res.type : '') }; }
+function viaXhr(url, body) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest(); x.open('POST', url, true); x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
+    x.onload = () => resolve({ info: describe(x.responseText, x.status) + ', Endadresse ' + (x.responseURL ? new URL(x.responseURL).host : '?') });
+    x.onerror = () => reject(new Error('Netzwerkfehler')); x.ontimeout = () => reject(new Error('XHR-Zeitüberschreitung'));
+    x.send(body);
+  });
+}
+async function step(label, limitMs, work) {
+  const r = await withTimeout(label, limitMs, work);
+  if (r.err) log(`${label}: ${r.ms} ms, FEHLER ${r.err}`, 'bad'); else log(`${label}: ${r.ms} ms, ${r.info}`, 'ok');
+}
+$('#run').addEventListener('click', async () => {
+  const url = $('#url').value.trim();
+  if (!/^https:\/\//.test(url)) { alert('Bitte die Web-App-Adresse eintragen.'); return; }
+  $('#run').disabled = true; $('#log').textContent = ''; lines.length = 0;
+  log(`Gerät: ${navigator.userAgent}`);
+  log(`Online laut Gerät: ${navigator.onLine}, Standalone: ${navigator.standalone === true}, Zeit: ${new Date().toLocaleString('de-DE')}`);
+  const body = JSON.stringify({ action: 'ping', token: 'diagnose' });
+  const hdr = { 'Content-Type': 'text/plain;charset=utf-8' };
+  const L = 60000;
+  await step('1 GET fetch', L, () => viaFetch(url, { method: 'GET', redirect: 'follow' }));
+  await step('2 POST fetch (wie die App)', L, () => viaFetch(url, { method: 'POST', headers: hdr, body, redirect: 'follow' }));
+  await step('3 POST fetch, 2. Versuch', L, () => viaFetch(url, { method: 'POST', headers: hdr, body, redirect: 'follow' }));
+  await step('4 POST fetch, Weiterleitung nicht folgen', L, () => viaFetch(url, { method: 'POST', headers: hdr, body, redirect: 'manual' }));
+  await step('5 POST fetch no-cors', L, () => viaFetch(url, { method: 'POST', mode: 'no-cors', headers: hdr, body, redirect: 'follow' }));
+  await step('6 POST XMLHttpRequest', L, () => viaXhr(url, body));
+  await step('7 GET mit Parametern', L, () => viaFetch(url + '?action=ping&token=diagnose', { method: 'GET', redirect: 'follow' }));
+  log('Fertig. Bitte „Ergebnis kopieren“ und den Text weitergeben.');
+  $('#run').disabled = false; $('#copy').hidden = false;
+});
+$('#copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(lines.join('\n')); alert('Kopiert'); } catch (e) { alert('Kopieren nicht möglich, bitte Screenshot machen'); } });
+</script>
+</body>
+</html>
